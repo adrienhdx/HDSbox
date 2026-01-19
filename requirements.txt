@@ -1,0 +1,35 @@
+# S3-Drive Sync Application Dependencies
+# =======================================
+# Python 3.10+ required
+
+# AWS SDK for S3 operations
+boto3>=1.34.0
+
+# File system monitoring
+watchdog>=4.0.0
+
+# System tray integration
+pystray>=0.19.5
+
+# Modern UI framework
+customtkinter>=5.2.0
+
+# Image handling for tray icons
+Pillow>=10.0.0
+
+# Secure credential storage
+keyring>=25.0.0
+
+# Cross-platform config paths
+platformdirs>=4.0.0
+
+# --- Optional Development Dependencies ---
+# Uncomment for development/testing
+
+# pytest>=8.0.0
+# pytest-cov>=4.0.0
+# black>=24.0.0
+# isort>=5.13.0
+# mypy>=1.8.0
+# types-Pillow
+# boto3-stubs[s3]
