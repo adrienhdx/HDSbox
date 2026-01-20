@@ -42,6 +42,7 @@ class SyncSettings:
     bucket_name: str = ""
     local_folder: str = ""
     s3_prefix: str = ""  # Optional prefix for S3 keys
+    online_url: str = ""  # URL to view files online (e.g., S3 console or web app)
     debounce_seconds: float = 1.0
     max_workers: int = 10
     multipart_threshold_mb: int = 100

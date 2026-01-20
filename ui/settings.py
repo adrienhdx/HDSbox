@@ -211,6 +211,12 @@ class SettingsWindow(ctk.CTk):
             width=80,
         )
         browse_btn.grid(row=0, column=1, padx=(5, 0))
+        
+        # Online URL (optional)
+        self.online_url_entry = self._create_labeled_entry(
+            sync_frame, "Online URL:", 3,
+            placeholder="(Optional) https://console.cloud.ovh.net/..."
+        )
     
     def _create_advanced_section(self) -> None:
         """Create advanced settings section."""
@@ -376,6 +382,7 @@ class SettingsWindow(ctk.CTk):
         self.bucket_entry.insert(0, config.sync.bucket_name or "")
         self.prefix_entry.insert(0, config.sync.s3_prefix or "")
         self.folder_entry.insert(0, config.sync.local_folder or "")
+        self.online_url_entry.insert(0, config.sync.online_url or "")
         
         # Advanced
         self.workers_slider.set(config.sync.max_workers)
@@ -413,6 +420,7 @@ class SettingsWindow(ctk.CTk):
         config.sync.bucket_name = self.bucket_entry.get().strip()
         config.sync.s3_prefix = self.prefix_entry.get().strip()
         config.sync.local_folder = self.folder_entry.get().strip()
+        config.sync.online_url = self.online_url_entry.get().strip()
         config.sync.max_workers = int(self.workers_slider.get())
         config.sync.debounce_seconds = round(self.debounce_slider.get(), 1)
         config.sync.max_retries = int(self.retries_slider.get())

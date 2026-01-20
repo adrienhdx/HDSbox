@@ -222,6 +222,56 @@ black .
 isort .
 ```
 
+## Building Standalone Applications
+
+### macOS (.app bundle)
+
+Build a native macOS application that runs in the menu bar (no Dock icon):
+
+```bash
+# Make the build script executable
+chmod +x distribution/build_macos.sh distribution/create_icns.sh
+
+# Optional: Create icon from PNG (1024x1024 recommended)
+./distribution/create_icns.sh icon.png
+
+# Build the application
+./distribution/build_macos.sh
+
+# For development (faster, links to source)
+./distribution/build_macos.sh --dev
+```
+
+The resulting `S3Sync.app` will be in the `dist/` folder. Drag it to Applications to install.
+
+**Note:** The app uses `LSUIElement: True` to hide from the Dock and appear only in the menu bar.
+
+### Windows (.exe)
+
+Build a Windows executable:
+
+```cmd
+REM Build the application
+distribution\build_windows.bat
+
+REM Clean build directories
+distribution\build_windows.bat --clean
+```
+
+The resulting executable will be in `dist\S3Sync\S3Sync.exe`.
+
+### Build Requirements
+
+| Platform | Package | Install |
+|----------|---------|---------|
+| macOS | py2app | `pip install py2app` |
+| Windows | PyInstaller | `pip install pyinstaller` |
+
+### Icons
+
+- **macOS**: Place `icon.icns` in the project root, or use `distribution/create_icns.sh` to convert from PNG
+- **Windows**: Place `icon.ico` in the project root (use online converters for PNG→ICO)
+
 ## Future Enhancements
 
 The architecture supports future bidirectional sync:

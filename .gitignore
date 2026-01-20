@@ -1,4 +1,2 @@
-/venv/
-/ui/__pycache__/
-.DS_Store
-*.pyc
+# Created by venv; see https://docs.python.org/3/library/venv.html
+*

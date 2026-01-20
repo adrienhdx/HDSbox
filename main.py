@@ -255,6 +255,46 @@ class S3SyncApp:
         import threading
         threading.Thread(target=do_empty, daemon=True).start()
     
+    def _on_open_folder(self) -> None:
+        """Open the synced folder in Finder/Explorer."""
+        import subprocess
+        import platform
+        
+        folder = self.config.sync.local_folder
+        if not folder:
+            self.logger.warning("No folder configured")
+            return
+        
+        self.logger.info(f"Opening folder: {folder}")
+        
+        try:
+            if platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", folder], check=True)
+            elif platform.system() == "Windows":
+                subprocess.run(["explorer", folder], check=True)
+            else:  # Linux
+                subprocess.run(["xdg-open", folder], check=True)
+        except Exception as e:
+            self.logger.error(f"Failed to open folder: {e}")
+    
+    def _on_view_online(self) -> None:
+        """Open the online URL in the default browser."""
+        import webbrowser
+        
+        url = self.config.sync.online_url
+        if not url:
+            self.logger.warning("No online URL configured")
+            if self._tray:
+                self._tray.show_notification("S3Sync", "URL en ligne non configurée (voir Paramètres)")
+            return
+        
+        self.logger.info(f"Opening URL: {url}")
+        
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            self.logger.error(f"Failed to open URL: {e}")
+    
     def _open_settings(self) -> None:
         """Open the settings window (thread-safe, can be called from tray thread)."""
         # Put command in queue - will be processed by main thread
@@ -468,6 +508,8 @@ class S3SyncApp:
             on_settings=self._open_settings,
             on_pause_resume=self._on_pause_resume,
             on_empty_trash=self._on_empty_trash,
+            on_open_folder=self._on_open_folder,
+            on_view_online=self._on_view_online,
             on_quit=self.quit,
         )
         

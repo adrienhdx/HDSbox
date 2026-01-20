@@ -103,6 +103,8 @@ class TrayManager:
         on_settings: Optional[Callable[[], None]] = None,
         on_pause_resume: Optional[Callable[[], None]] = None,
         on_empty_trash: Optional[Callable[[], None]] = None,
+        on_open_folder: Optional[Callable[[], None]] = None,
+        on_view_online: Optional[Callable[[], None]] = None,
         on_quit: Optional[Callable[[], None]] = None,
     ):
         if pystray is None:
@@ -112,6 +114,8 @@ class TrayManager:
         self.on_settings = on_settings
         self.on_pause_resume = on_pause_resume
         self.on_empty_trash = on_empty_trash
+        self.on_open_folder = on_open_folder
+        self.on_view_online = on_view_online
         self.on_quit = on_quit
         
         self._icon: Optional[Icon] = None
@@ -223,6 +227,18 @@ class TrayManager:
         if self.on_empty_trash:
             self.on_empty_trash()
     
+    def _handle_open_folder(self, icon, item):
+        """Handle open folder menu click."""
+        logger.info("Open folder requested from system tray menu")
+        if self.on_open_folder:
+            self.on_open_folder()
+    
+    def _handle_view_online(self, icon, item):
+        """Handle view online menu click."""
+        logger.info("View online requested from system tray menu")
+        if self.on_view_online:
+            self.on_view_online()
+    
     def _create_menu(self) -> Menu:
         """Create the tray menu."""
         # Build menu items list dynamically
@@ -244,6 +260,15 @@ class TrayManager:
         items.extend(self._get_recent_files_items())
         
         items.extend([
+            Menu.SEPARATOR,
+            MenuItem(
+                "Open Folder",
+                self._handle_open_folder,
+            ),
+            MenuItem(
+                "View Online",
+                self._handle_view_online,
+            ),
             Menu.SEPARATOR,
             MenuItem(
                 "Pause Sync",
