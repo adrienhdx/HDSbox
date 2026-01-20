@@ -10,7 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from queue import Queue
-from typing import Optional
+from typing import Callable, Optional
 
 from watchdog.observers import Observer
 from watchdog.events import (
@@ -46,12 +46,14 @@ class DebouncedEventHandler(FileSystemEventHandler):
         watch_folder: Path,
         exclusions: ExclusionSettings,
         debounce_seconds: float = 1.0,
+        on_directory_deleted: Optional[Callable[[str], list[str]]] = None,
     ):
         super().__init__()
         self.event_queue = event_queue
         self.watch_folder = watch_folder
         self.exclusions = exclusions
         self.debounce_seconds = debounce_seconds
+        self.on_directory_deleted = on_directory_deleted  # Callback to get files in deleted dir
         
         # Track last event time per file for debouncing
         self._last_events: dict[str, datetime] = defaultdict(lambda: datetime.min)
@@ -218,19 +220,38 @@ class DebouncedEventHandler(FileSystemEventHandler):
         self._schedule_event(sync_event)
     
     def on_deleted(self, event):
-        """Handle file deletion events."""
+        """Handle file and directory deletion events."""
         if isinstance(event, DirDeletedEvent):
-            logger.debug(f"Ignoring directory deletion: {event.src_path}")
-            return  # Ignore directory deletion
+            # Directory deleted - need to trash all files inside
+            rel_path = self._get_relative_path(event.src_path)
+            logger.info(f"Directory deleted: {rel_path}")
+            
+            if self._should_ignore(event.src_path):
+                return
+            
+            # Get list of files that were in this directory from sync state
+            if self.on_directory_deleted:
+                files_to_delete = self.on_directory_deleted(rel_path)
+                logger.debug(f"Found {len(files_to_delete)} files to trash in deleted directory: {rel_path}")
+                
+                for file_path in files_to_delete:
+                    sync_event = SyncEvent(
+                        event_type=EventType.LOCAL_DELETE,
+                        src_path=Path(file_path),
+                    )
+                    # Queue immediately (no debounce for directory deletion)
+                    self.event_queue.put(sync_event)
+                    logger.debug(f"Queued delete for: {file_path}")
+                
+                if files_to_delete:
+                    logger.info(f"Queued {len(files_to_delete)} files for trash from deleted directory: {rel_path}")
+            return
         
         logger.debug(f"File deleted: {event.src_path}")
         if self._should_ignore(event.src_path):
             return
         
-        # In one-way sync mode, we don't propagate deletes to S3
-        # Just log and skip (design allows for future bidirectional sync)
         rel_path = self._get_relative_path(event.src_path)
-        logger.info(f"File deleted (not syncing in one-way mode): {rel_path}")
         
         # NOTE: We intentionally do NOT clear pending events here.
         # Applications like Excel/Word use "safe save" which:
@@ -238,6 +259,20 @@ class DebouncedEventHandler(FileSystemEventHandler):
         # 2. Delete original  <-- we're here
         # 3. Rename temp to original (triggers create/modify)
         # If we cleared pending events, the final create would be lost.
+        
+        # Queue LOCAL_DELETE event to move file to S3 Corbeille
+        sync_event = SyncEvent(
+            event_type=EventType.LOCAL_DELETE,
+            src_path=Path(rel_path),
+        )
+        
+        # Add small delay before processing delete to allow safe-save pattern
+        # This prevents trashing files during Excel/Word save operations
+        with self._lock:
+            self._pending_events[rel_path] = sync_event
+            self._last_events[rel_path] = datetime.now()
+        
+        logger.debug(f"Scheduled delete event: {rel_path} (pending: {len(self._pending_events)})")
 
 
 class FileWatcher:
@@ -248,9 +283,15 @@ class FileWatcher:
     for file changes and queue them for syncing.
     """
     
-    def __init__(self, config: AppConfig, event_queue: Queue):
+    def __init__(
+        self, 
+        config: AppConfig, 
+        event_queue: Queue,
+        on_directory_deleted: Optional[Callable[[str], list[str]]] = None,
+    ):
         self.config = config
         self.event_queue = event_queue
+        self.on_directory_deleted = on_directory_deleted
         self._observer: Optional[Observer] = None
         self._handler: Optional[DebouncedEventHandler] = None
         self._is_running = False
@@ -295,6 +336,7 @@ class FileWatcher:
                 watch_folder=watch_path,
                 exclusions=self.config.exclusions,
                 debounce_seconds=self.config.sync.debounce_seconds,
+                on_directory_deleted=self.on_directory_deleted,
             )
             
             # Create and configure observer

@@ -326,6 +326,211 @@ class S3ClientWrapper:
             logger.error(f"Delete failed for {s3_key}: {e}")
             return False, f"Delete failed: {str(e)}"
     
+    def empty_trash(self) -> tuple[bool, int, str]:
+        """
+        Delete all objects in the .corbeille folder.
+        
+        Returns:
+            Tuple of (success, deleted_count, message)
+        """
+        bucket = self.config.sync.bucket_name
+        
+        # Build trash prefix
+        if self.config.sync.s3_prefix:
+            prefix = self.config.sync.s3_prefix.rstrip('/')
+            trash_prefix = f"{prefix}/.corbeille/"
+        else:
+            trash_prefix = ".corbeille/"
+        
+        try:
+            logger.info(f"Emptying trash: s3://{bucket}/{trash_prefix}")
+            
+            # List all objects in trash
+            paginator = self.client.get_paginator('list_objects_v2')
+            deleted_count = 0
+            
+            for page in paginator.paginate(Bucket=bucket, Prefix=trash_prefix):
+                objects = page.get('Contents', [])
+                if not objects:
+                    continue
+                
+                # Delete in batches of 1000 (S3 limit)
+                delete_objects = [{'Key': obj['Key']} for obj in objects]
+                
+                if delete_objects:
+                    response = self.client.delete_objects(
+                        Bucket=bucket,
+                        Delete={'Objects': delete_objects, 'Quiet': True}
+                    )
+                    
+                    # Check for errors
+                    errors = response.get('Errors', [])
+                    if errors:
+                        logger.warning(f"Some objects failed to delete: {errors}")
+                    
+                    deleted_count += len(delete_objects) - len(errors)
+            
+            if deleted_count > 0:
+                logger.info(f"Emptied trash: deleted {deleted_count} objects")
+                return True, deleted_count, f"Deleted {deleted_count} objects from trash"
+            else:
+                logger.info("Trash was already empty")
+                return True, 0, "Trash was already empty"
+                
+        except ClientError as e:
+            error_msg = e.response['Error'].get('Message', str(e))
+            logger.error(f"Empty trash failed: {error_msg}")
+            return False, 0, f"Empty trash failed: {error_msg}"
+        except Exception as e:
+            logger.error(f"Empty trash failed: {e}", exc_info=True)
+            return False, 0, f"Empty trash failed: {str(e)}"
+
+    def move_to_trash(self, s3_key: str) -> tuple[bool, str]:
+        """
+        Move an S3 object to the Corbeille (trash) folder instead of deleting.
+        
+        The object is copied to .corbeille/{original_key} and then deleted
+        from its original location.
+        
+        Args:
+            s3_key: S3 object key to move to trash (relative path)
+        
+        Returns:
+            Tuple of (success, message)
+        """
+        bucket = self.config.sync.bucket_name
+        
+        # Build full keys with prefix
+        if self.config.sync.s3_prefix:
+            prefix = self.config.sync.s3_prefix.rstrip('/')
+            original_key = f"{prefix}/{s3_key}"
+            trash_key = f"{prefix}/.corbeille/{s3_key}"
+        else:
+            original_key = s3_key
+            trash_key = f".corbeille/{s3_key}"
+        
+        try:
+            logger.debug(f"Moving to trash: {original_key} -> {trash_key}")
+            
+            # Copy to trash location
+            copy_source = {'Bucket': bucket, 'Key': original_key}
+            self.client.copy_object(
+                CopySource=copy_source,
+                Bucket=bucket,
+                Key=trash_key
+            )
+            logger.debug(f"Copied to trash: {trash_key}")
+            
+            # Delete original
+            self.client.delete_object(Bucket=bucket, Key=original_key)
+            logger.info(f"Moved to trash: s3://{bucket}/{original_key} -> {trash_key}")
+            
+            return True, f"Moved to trash: {trash_key}"
+            
+        except ClientError as e:
+            error_code = e.response['Error'].get('Code', '')
+            error_msg = e.response['Error'].get('Message', str(e))
+            
+            if error_code == '404' or error_code == 'NoSuchKey':
+                logger.warning(f"File not found in S3, nothing to trash: {original_key}")
+                return True, "File not in S3"  # Not an error - file may not have been synced yet
+            
+            logger.error(f"Move to trash failed: {error_msg}")
+            return False, f"Move to trash failed: {error_msg}"
+        except Exception as e:
+            logger.error(f"Move to trash failed: {e}", exc_info=True)
+            return False, f"Move to trash failed: {str(e)}"
+    
+    def download_file(
+        self,
+        s3_key: str,
+        local_path: Path,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> tuple[bool, str]:
+        """
+        Download a file from S3 to local storage.
+        
+        Uses atomic write: downloads to temp file then renames to final path.
+        
+        Args:
+            s3_key: S3 object key (relative path)
+            local_path: Local file path to write to
+            progress_callback: Optional callback(filename, bytes_received, total_bytes)
+        
+        Returns:
+            Tuple of (success, message)
+        """
+        bucket = self.config.sync.bucket_name
+        
+        # Build full S3 key with prefix
+        if self.config.sync.s3_prefix:
+            s3_key_full = f"{self.config.sync.s3_prefix.rstrip('/')}/{s3_key}"
+        else:
+            s3_key_full = s3_key
+        
+        logger.debug(f"download_file called: s3://{bucket}/{s3_key_full} -> {local_path}")
+        
+        try:
+            # Get file size for progress tracking
+            head = self.client.head_object(Bucket=bucket, Key=s3_key_full)
+            file_size = head['ContentLength']
+            last_modified = head['LastModified']
+            logger.debug(f"S3 object size: {file_size} bytes, last modified: {last_modified}")
+            
+            # Create progress tracker if callback provided
+            callback = None
+            if progress_callback:
+                progress = UploadProgress(local_path.name, file_size, progress_callback)
+                callback = progress
+            
+            # Ensure parent directory exists
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Download to temp file first (atomic write)
+            temp_path = local_path.with_suffix(local_path.suffix + '.tmp')
+            
+            logger.info(f"Downloading s3://{bucket}/{s3_key_full} -> {local_path}")
+            
+            self.client.download_file(
+                Bucket=bucket,
+                Key=s3_key_full,
+                Filename=str(temp_path),
+                Config=self.transfer_config,
+                Callback=callback,
+            )
+            
+            # Atomic rename to final path
+            temp_path.replace(local_path)
+            
+            # Try to set mtime to match S3 LastModified
+            try:
+                import time
+                mtime = last_modified.timestamp()
+                os.utime(local_path, (mtime, mtime))
+            except Exception as e:
+                logger.debug(f"Could not set mtime: {e}")
+            
+            logger.info(f"Successfully downloaded {local_path.name} ({file_size} bytes)")
+            return True, f"Downloaded from s3://{bucket}/{s3_key_full}"
+            
+        except ClientError as e:
+            error_code = e.response['Error'].get('Code', '')
+            error_msg = e.response['Error'].get('Message', str(e))
+            
+            if error_code == '404' or error_code == 'NoSuchKey':
+                logger.warning(f"Download failed - file not found: {s3_key_full}")
+                return False, "File not found in S3"
+            
+            logger.error(f"Download failed for {s3_key_full}: {error_msg}")
+            return False, f"Download failed: {error_msg}"
+        except Exception as e:
+            logger.error(f"Download failed for {s3_key_full}: {e}", exc_info=True)
+            # Clean up temp file if it exists
+            temp_path = local_path.with_suffix(local_path.suffix + '.tmp')
+            if temp_path.exists():
+                temp_path.unlink()
+            return False, f"Download failed: {str(e)}"
+    
     def list_objects(self, prefix: str = "") -> list[dict]:
         """
         List objects in the bucket.

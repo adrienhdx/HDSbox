@@ -44,11 +44,13 @@ class SyncEngine:
         event_queue: Queue,
         state: AppState,
         status_callback: Optional[Callable[[AppState], None]] = None,
+        on_file_deleted: Optional[Callable[[str], None]] = None,
     ):
         self.config = config
         self.event_queue = event_queue
         self.state = state
         self.status_callback = status_callback
+        self.on_file_deleted = on_file_deleted
         
         self._s3_client: Optional[S3ClientWrapper] = None
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -179,6 +181,14 @@ class SyncEngine:
             # For rename/move: try to rename in S3, fall back to upload if needed
             logger.debug(f"Submitting rename task to thread pool: {event.dest_path} -> {path_key}")
             future = self._executor.submit(self._rename_file, event)
+        elif event.event_type == EventType.DOWNLOAD:
+            # For download: S3 -> local
+            logger.debug(f"Submitting download task to thread pool: {path_key}")
+            future = self._executor.submit(self._download_file, event)
+        elif event.event_type == EventType.LOCAL_DELETE:
+            # For local delete: move S3 file to Corbeille
+            logger.debug(f"Submitting trash task to thread pool: {path_key}")
+            future = self._executor.submit(self._trash_file, event)
         else:
             # For create/modify: upload the file
             logger.debug(f"Submitting upload task to thread pool: {path_key}")
@@ -325,6 +335,150 @@ class SyncEngine:
             error_message="Max retries exceeded"
         )
     
+    def _download_file(self, event: SyncEvent) -> SyncResult:
+        """
+        Download a file from S3 to local storage.
+        
+        This runs in a thread pool worker.
+        """
+        s3_client = self._get_s3_client()
+        local_path = Path(self.config.sync.local_folder) / event.src_path
+        s3_key = str(event.src_path).replace("\\", "/")
+        
+        # Update current file in state
+        self.state.current_file = f"⬇ {event.src_path.name}"
+        self._notify_status()
+        
+        start_time = time.time()
+        file_size = event.s3_size or 0
+        
+        logger.debug(f"Starting download: s3://{s3_key} -> {local_path}")
+        
+        # Retry loop
+        while event.can_retry():
+            try:
+                success, message = s3_client.download_file(
+                    s3_key=s3_key,
+                    local_path=local_path,
+                    progress_callback=self._on_download_progress,
+                )
+                
+                if success:
+                    download_time = time.time() - start_time
+                    # Get actual file size after download
+                    if local_path.exists():
+                        file_size = local_path.stat().st_size
+                    
+                    return SyncResult(
+                        event=event,
+                        status=SyncStatus.COMPLETED,
+                        s3_key=s3_key,
+                        file_size=file_size,
+                        upload_time=download_time,  # Reusing field for download time
+                    )
+                else:
+                    raise Exception(message)
+                    
+            except Exception as e:
+                event.retry_count += 1
+                
+                if event.can_retry():
+                    delay = min(
+                        self.config.sync.retry_base_delay * (2 ** event.retry_count),
+                        self.config.sync.retry_max_delay
+                    )
+                    logger.warning(
+                        f"Download failed for {event.src_path}, "
+                        f"retrying in {delay:.1f}s (attempt {event.retry_count}/{event.max_retries}): {e}"
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Download failed permanently for {event.src_path}: {e}")
+                    return SyncResult(
+                        event=event,
+                        status=SyncStatus.FAILED,
+                        s3_key=s3_key,
+                        file_size=file_size,
+                        error_message=str(e),
+                    )
+        
+        return SyncResult(
+            event=event,
+            status=SyncStatus.FAILED,
+            s3_key=s3_key,
+            error_message="Max retries exceeded"
+        )
+    
+    def _trash_file(self, event: SyncEvent) -> SyncResult:
+        """
+        Move a deleted local file to S3 Corbeille (trash).
+        
+        This runs in a thread pool worker.
+        """
+        s3_client = self._get_s3_client()
+        s3_key = str(event.src_path).replace("\\", "/")
+        
+        # Update current file in state
+        self.state.current_file = f"🗑 {event.src_path.name}"
+        self._notify_status()
+        
+        start_time = time.time()
+        
+        logger.debug(f"Moving to trash: s3://{s3_key}")
+        
+        try:
+            success, message = s3_client.move_to_trash(s3_key)
+            
+            operation_time = time.time() - start_time
+            
+            if success:
+                # Notify that file was deleted (to clean up sync state)
+                if self.on_file_deleted:
+                    try:
+                        self.on_file_deleted(s3_key)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify file deletion: {e}")
+                
+                return SyncResult(
+                    event=event,
+                    status=SyncStatus.COMPLETED,
+                    s3_key=s3_key,
+                    file_size=0,
+                    upload_time=operation_time,
+                )
+            else:
+                # If file not found in S3, that's okay - it wasn't synced yet
+                if "not in S3" in message or "not found" in message.lower():
+                    logger.debug(f"File not in S3, nothing to trash: {s3_key}")
+                    # Still notify deletion to clean up state
+                    if self.on_file_deleted:
+                        try:
+                            self.on_file_deleted(s3_key)
+                        except Exception as e:
+                            logger.warning(f"Failed to notify file deletion: {e}")
+                    return SyncResult(
+                        event=event,
+                        status=SyncStatus.COMPLETED,
+                        s3_key=s3_key,
+                        file_size=0,
+                        upload_time=operation_time,
+                    )
+                raise Exception(message)
+                
+        except Exception as e:
+            logger.error(f"Trash failed for {event.src_path}: {e}")
+            return SyncResult(
+                event=event,
+                status=SyncStatus.FAILED,
+                s3_key=s3_key,
+                error_message=str(e),
+            )
+    
+    def _on_download_progress(self, filename: str, bytes_received: int, total_bytes: int) -> None:
+        """Callback for download progress updates."""
+        percent = (bytes_received / total_bytes * 100) if total_bytes > 0 else 100
+        logger.debug(f"Download progress: {filename} - {percent:.1f}%")
+    
     def _on_upload_progress(self, filename: str, bytes_sent: int, total_bytes: int) -> None:
         """Callback for upload progress updates."""
         # Could be used to update a progress bar in the UI
@@ -347,22 +501,36 @@ class SyncEngine:
             result = future.result()
             
             if result.status == SyncStatus.COMPLETED:
-                # Add to recent files
-                recent = RecentFile(
-                    filename=result.event.src_path.name,
-                    s3_key=result.s3_key,
-                    synced_at=result.completed_at,
-                    file_size=result.file_size,
-                    local_path=str(result.event.src_path),
-                )
-                self.state.add_recent_file(recent)
-                self.state.last_error = None
+                # Determine old filename for renames (to remove from recent list)
+                old_filename = None
+                if result.event.event_type == EventType.MOVED and result.event.dest_path:
+                    old_filename = result.event.dest_path.name
                 
-                logger.info(
-                    f"Synced: {result.event.src_path} "
-                    f"({format_file_size(result.file_size)}) "
-                    f"in {result.upload_time:.2f}s"
-                )
+                # Skip adding trash operations to recent files
+                if result.event.event_type == EventType.LOCAL_DELETE:
+                    logger.info(f"Trashed: {result.event.src_path}")
+                else:
+                    # Build full local path for reveal in Finder
+                    full_local_path = Path(self.config.sync.local_folder) / result.event.src_path
+                    
+                    # Add to recent files
+                    recent = RecentFile(
+                        filename=result.event.src_path.name,
+                        s3_key=result.s3_key,
+                        synced_at=result.completed_at,
+                        file_size=result.file_size,
+                        local_path=str(full_local_path),
+                    )
+                    self.state.add_recent_file(recent, old_filename=old_filename)
+                    
+                    action = "Downloaded" if result.event.event_type == EventType.DOWNLOAD else "Synced"
+                    logger.info(
+                        f"{action}: {result.event.src_path} "
+                        f"({format_file_size(result.file_size)}) "
+                        f"in {result.upload_time:.2f}s"
+                    )
+                
+                self.state.last_error = None
             else:
                 self.state.last_error = result.error_message
                 logger.error(f"Sync failed: {result.event.src_path} - {result.error_message}")

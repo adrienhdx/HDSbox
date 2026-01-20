@@ -16,6 +16,15 @@ class EventType(Enum):
     MODIFIED = "modified"
     MOVED = "moved"
     DELETED = "deleted"
+    # Bidirectional sync events
+    DOWNLOAD = "download"       # S3 -> local
+    LOCAL_DELETE = "local_delete"  # Local file deleted -> move to S3 Corbeille
+
+
+class SyncDirection(Enum):
+    """Direction of sync operation."""
+    LOCAL_TO_S3 = "upload"
+    S3_TO_LOCAL = "download"
 
 
 class SyncStatus(Enum):
@@ -36,6 +45,9 @@ class SyncEvent:
     timestamp: datetime = field(default_factory=datetime.now)
     retry_count: int = 0
     max_retries: int = 5
+    # For download events: store S3 metadata
+    s3_etag: Optional[str] = None
+    s3_size: Optional[int] = None
     
     @property
     def s3_key(self) -> str:
@@ -72,6 +84,27 @@ class RecentFile:
         """Format for display in tray menu."""
         size_str = format_file_size(self.file_size)
         return f"{self.filename} ({size_str})"
+    
+    def to_dict(self) -> dict:
+        """Serialize to dictionary for JSON storage."""
+        return {
+            'filename': self.filename,
+            's3_key': self.s3_key,
+            'synced_at': self.synced_at.isoformat(),
+            'file_size': self.file_size,
+            'local_path': self.local_path,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'RecentFile':
+        """Deserialize from dictionary."""
+        return cls(
+            filename=data['filename'],
+            s3_key=data['s3_key'],
+            synced_at=datetime.fromisoformat(data['synced_at']),
+            file_size=data['file_size'],
+            local_path=data.get('local_path', ''),
+        )
 
 
 @dataclass 
@@ -89,8 +122,27 @@ class AppState:
     max_recent_files: int = 10
     last_error: Optional[str] = None
     
-    def add_recent_file(self, recent: RecentFile) -> None:
-        """Add a file to the recent files list, maintaining max size."""
+    def add_recent_file(self, recent: RecentFile, old_filename: Optional[str] = None) -> None:
+        """
+        Add a file to the recent files list, maintaining max size.
+        
+        Args:
+            recent: The new recent file entry
+            old_filename: If this is a rename, the old filename to remove
+        """
+        # If this is a rename, remove the old filename entry
+        if old_filename:
+            self.recent_files = [
+                rf for rf in self.recent_files 
+                if rf.filename != old_filename
+            ]
+        
+        # Also remove any existing entry with the same filename (update case)
+        self.recent_files = [
+            rf for rf in self.recent_files 
+            if rf.filename != recent.filename
+        ]
+        
         self.recent_files.insert(0, recent)
         if len(self.recent_files) > self.max_recent_files:
             self.recent_files = self.recent_files[:self.max_recent_files]

@@ -86,11 +86,13 @@ def setup_logging(log_file: Optional[Path] = None, debug: bool = False) -> None:
 
 # Now import application modules
 from config import get_config_manager, AppConfig
-from models import AppState
+from models import AppState, EventType
 from watcher import FileWatcher
 from sync_engine import SyncEngine
 from tray import TrayManager
 from ui.settings import SettingsWindow
+from s3_scanner import S3Scanner
+from s3_client import get_s3_client
 
 
 class S3SyncApp:
@@ -112,6 +114,9 @@ class S3SyncApp:
         self.state = AppState()
         self.event_queue: Queue = Queue(maxsize=10000)
         
+        # Load recent files from previous session
+        self.state.recent_files = self.config_manager.load_recent_files()
+        
         # UI command queue for thread-safe tray -> tkinter communication
         self._ui_command_queue: Queue = Queue()
         
@@ -120,6 +125,7 @@ class S3SyncApp:
         self._sync_engine: Optional[SyncEngine] = None
         self._tray: Optional[TrayManager] = None
         self._settings_window: Optional[SettingsWindow] = None
+        self._s3_scanner: Optional[S3Scanner] = None
         
         # Thread safety
         self._lock = threading.Lock()
@@ -201,6 +207,54 @@ class S3SyncApp:
             self.state.is_paused = True
             self.logger.debug("Sync paused")
     
+    def _on_empty_trash(self) -> None:
+        """Empty trash (thread-safe, can be called from tray thread)."""
+        # Put command in queue - will be processed by main thread
+        self._ui_command_queue.put(("empty_trash", None))
+    
+    def _do_empty_trash(self) -> None:
+        """Actually empty trash (must be called from main thread)."""
+        self.logger.info("Emptying S3 Corbeille...")
+        
+        # Update state
+        original_file = self.state.current_file
+        self.state.current_file = "Emptying trash..."
+        self.state.is_syncing = True
+        if self._tray:
+            self._tray.update()
+        
+        # Run in background thread to avoid blocking UI
+        def do_empty():
+            try:
+                s3_client = get_s3_client(self.config)
+                success, count, message = s3_client.empty_trash()
+                
+                if success:
+                    if count > 0:
+                        self.logger.info(f"Trash emptied: {count} files deleted")
+                        if self._tray:
+                            self._tray.show_notification("S3Sync", f"Corbeille vidée: {count} fichiers supprimés")
+                    else:
+                        self.logger.info("Trash was already empty")
+                        if self._tray:
+                            self._tray.show_notification("S3Sync", "La corbeille était déjà vide")
+                else:
+                    self.logger.error(f"Failed to empty trash: {message}")
+                    if self._tray:
+                        self._tray.show_notification("S3Sync", f"Erreur: {message}")
+            except Exception as e:
+                self.logger.error(f"Failed to empty trash: {e}", exc_info=True)
+                if self._tray:
+                    self._tray.show_notification("S3Sync", f"Erreur: {str(e)}")
+            finally:
+                self.state.is_syncing = False
+                self.state.current_file = original_file
+                if self._tray:
+                    self._tray.update()
+        
+        import threading
+        threading.Thread(target=do_empty, daemon=True).start()
+    
     def _open_settings(self) -> None:
         """Open the settings window (thread-safe, can be called from tray thread)."""
         # Put command in queue - will be processed by main thread
@@ -223,6 +277,8 @@ class S3SyncApp:
                     self._do_open_settings()
                 elif cmd == "pause_resume":
                     self._do_pause_resume()
+                elif cmd == "empty_trash":
+                    self._do_empty_trash()
                 elif cmd == "quit":
                     self.quit()
                     return
@@ -245,28 +301,91 @@ class S3SyncApp:
         self.logger.debug(f"S3 prefix: {self.config.sync.s3_prefix or '(none)'}")
         self.logger.debug(f"Max workers: {self.config.sync.max_workers}")
         
-        # Start sync engine
+        # Create S3 scanner first (for state DB callbacks)
+        self.logger.debug("Creating S3Scanner")
+        self._s3_scanner = S3Scanner(
+            config=self.config,
+            progress_callback=self._on_scan_progress,
+        )
+        
+        # Start sync engine (to process events from scanner)
         self.logger.debug("Creating SyncEngine")
         self._sync_engine = SyncEngine(
             config=self.config,
             event_queue=self.event_queue,
             state=self.state,
             status_callback=self._on_status_update,
+            on_file_deleted=self._s3_scanner.remove_sync_state,
         )
         self._sync_engine.start()
         self.logger.debug("SyncEngine started")
+        
+        # Run S3 scan for bidirectional sync
+        self._run_initial_sync()
         
         # Start file watcher
         self.logger.debug("Creating FileWatcher")
         self._watcher = FileWatcher(
             config=self.config,
             event_queue=self.event_queue,
+            on_directory_deleted=self._s3_scanner.get_files_in_directory if self._s3_scanner else None,
         )
         if self._watcher.start():
             self.state.is_running = True
             self.logger.info("Sync services started successfully")
         else:
             self.logger.error("Failed to start file watcher")
+    
+    def _run_initial_sync(self) -> None:
+        """Run initial S3 scan for bidirectional sync."""
+        self.logger.info("Running initial S3 sync scan...")
+        
+        try:
+            # Update tray status
+            self.state.current_file = "Scanning S3..."
+            self.state.is_syncing = True
+            if self._tray:
+                self._tray.update()
+            
+            download_events, upload_events = self._s3_scanner.scan()
+            
+            total_events = len(download_events) + len(upload_events)
+            if total_events > 0:
+                self.logger.info(f"Initial sync: {len(download_events)} downloads, {len(upload_events)} uploads")
+                
+                # Queue all events
+                for event in download_events:
+                    self.event_queue.put(event)
+                for event in upload_events:
+                    self.event_queue.put(event)
+                
+                # Update state - syncing will be managed by sync engine
+                self.state.current_file = f"Syncing {total_events} files..."
+                if self._tray:
+                    self._tray.update()
+                    self._tray.show_notification(
+                        "S3Sync",
+                        f"Syncing {total_events} files..."
+                    )
+            else:
+                self.logger.info("Initial sync: all files in sync")
+                self.state.is_syncing = False
+                self.state.current_file = None
+                if self._tray:
+                    self._tray.update()
+                
+        except Exception as e:
+            self.logger.error(f"Initial sync scan failed: {e}", exc_info=True)
+            self.state.is_syncing = False
+            self.state.current_file = None
+            if self._tray:
+                self._tray.update()
+    
+    def _on_scan_progress(self, stage: str, current: int, total: int) -> None:
+        """Callback for S3 scan progress."""
+        if total > 0:
+            self.state.current_file = f"{stage}: {current}/{total}"
+            self._on_status_update(self.state)
     
     def _stop_services(self) -> None:
         """Stop the watcher and sync engine."""
@@ -286,6 +405,11 @@ class S3SyncApp:
             self._sync_engine = None
             self.logger.debug("SyncEngine stopped")
         
+        if self._s3_scanner:
+            self.logger.debug("Closing S3Scanner")
+            self._s3_scanner.close()
+            self._s3_scanner = None
+        
         self.logger.info("Sync services stopped")
     
     def quit(self) -> None:
@@ -295,6 +419,10 @@ class S3SyncApp:
         
         self.logger.debug("Setting shutdown event")
         self._shutdown_event.set()
+        
+        # Save recent files for next session
+        self.logger.debug("Saving recent files")
+        self.config_manager.save_recent_files(self.state.recent_files)
         
         self._stop_services()
         
@@ -339,6 +467,7 @@ class S3SyncApp:
             state=self.state,
             on_settings=self._open_settings,
             on_pause_resume=self._on_pause_resume,
+            on_empty_trash=self._on_empty_trash,
             on_quit=self.quit,
         )
         

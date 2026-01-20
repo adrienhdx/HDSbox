@@ -102,6 +102,7 @@ class TrayManager:
         state: AppState,
         on_settings: Optional[Callable[[], None]] = None,
         on_pause_resume: Optional[Callable[[], None]] = None,
+        on_empty_trash: Optional[Callable[[], None]] = None,
         on_quit: Optional[Callable[[], None]] = None,
     ):
         if pystray is None:
@@ -110,6 +111,7 @@ class TrayManager:
         self.state = state
         self.on_settings = on_settings
         self.on_pause_resume = on_pause_resume
+        self.on_empty_trash = on_empty_trash
         self.on_quit = on_quit
         
         self._icon: Optional[Icon] = None
@@ -215,6 +217,12 @@ class TrayManager:
             self.on_quit()
         self.stop()
     
+    def _handle_empty_trash(self, icon, item):
+        """Handle empty trash menu click."""
+        logger.info("Empty trash requested from system tray menu")
+        if self.on_empty_trash:
+            self.on_empty_trash()
+    
     def _create_menu(self) -> Menu:
         """Create the tray menu."""
         # Build menu items list dynamically
@@ -245,6 +253,10 @@ class TrayManager:
             MenuItem(
                 "Settings...",
                 self._handle_settings,
+            ),
+            MenuItem(
+                "Empty Trash",
+                self._handle_empty_trash,
             ),
             Menu.SEPARATOR,
             MenuItem(

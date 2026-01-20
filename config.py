@@ -43,12 +43,12 @@ class SyncSettings:
     local_folder: str = ""
     s3_prefix: str = ""  # Optional prefix for S3 keys
     debounce_seconds: float = 1.0
-    max_workers: int = 4
+    max_workers: int = 10
     multipart_threshold_mb: int = 100
     multipart_chunksize_mb: int = 8
-    max_retries: int = 5
-    retry_base_delay: float = 1.0
-    retry_max_delay: float = 60.0
+    max_retries: int = 3
+    retry_base_delay: float = 0.5
+    retry_max_delay: float = 30.0
 
 
 @dataclass
@@ -86,6 +86,9 @@ class ExclusionSettings:
         "*.tmp",
         "*.temp",
         "*.bak",
+        # S3Sync trash folder (soft delete)
+        ".corbeille",
+        ".corbeille/**",
     ])
     
     def is_excluded(self, relative_path: str) -> bool:
@@ -298,6 +301,46 @@ class ConfigManager:
         """Get the path to the log file."""
         self._ensure_directories()
         return self.log_dir / "s3sync.log"
+    
+    def get_recent_files_path(self) -> Path:
+        """Get the path to the recent files cache."""
+        return self.config_dir / "recent_files.json"
+    
+    def save_recent_files(self, recent_files: list) -> None:
+        """Save recent files list to disk."""
+        from models import RecentFile
+        
+        self._ensure_directories()
+        recent_path = self.get_recent_files_path()
+        
+        try:
+            data = [rf.to_dict() for rf in recent_files]
+            with open(recent_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.debug(f"Saved {len(recent_files)} recent files to {recent_path}")
+        except Exception as e:
+            logger.error(f"Failed to save recent files: {e}")
+    
+    def load_recent_files(self) -> list:
+        """Load recent files list from disk."""
+        from models import RecentFile
+        
+        recent_path = self.get_recent_files_path()
+        
+        if not recent_path.exists():
+            logger.debug("No recent files cache found")
+            return []
+        
+        try:
+            with open(recent_path, 'r') as f:
+                data = json.load(f)
+            
+            recent_files = [RecentFile.from_dict(item) for item in data]
+            logger.debug(f"Loaded {len(recent_files)} recent files from {recent_path}")
+            return recent_files
+        except Exception as e:
+            logger.error(f"Failed to load recent files: {e}")
+            return []
     
     def reset_to_defaults(self) -> AppConfig:
         """Reset configuration to defaults."""

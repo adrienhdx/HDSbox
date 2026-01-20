@@ -159,15 +159,16 @@ class SettingsWindow(ctk.CTk):
             command=self._test_connection,
             width=120,
         )
-        test_btn.grid(row=4, column=1, pady=10, sticky="e")
+        test_btn.grid(row=4, column=0, columnspan=2, pady=10, sticky="e")
         
-        # Connection status label
+        # Connection status label (on its own row to take full width)
         self.connection_status = ctk.CTkLabel(
             aws_frame,
             text="",
             text_color="gray",
+            anchor="e",
         )
-        self.connection_status.grid(row=4, column=0, pady=10, sticky="w")
+        self.connection_status.grid(row=5, column=0, columnspan=2, pady=(0, 10), sticky="e")
     
     def _create_sync_section(self) -> None:
         """Create sync settings section."""
