@@ -237,14 +237,14 @@ chmod +x distribution/build_macos.sh distribution/create_icns.sh
 
 # Build the application
 ./distribution/build_macos.sh
-
-# For development (faster, links to source)
-./distribution/build_macos.sh --dev
 ```
 
 The resulting `S3Sync.app` will be in the `dist/` folder. Drag it to Applications to install.
 
 **Note:** The app uses `LSUIElement: True` to hide from the Dock and appear only in the menu bar.
+
+**Prerequisites:**
+- Install tkinter for Homebrew Python: `brew install python-tk@3.14` (or your Python version)
 
 ### Windows (.exe)
 
@@ -264,7 +264,7 @@ The resulting executable will be in `dist\S3Sync\S3Sync.exe`.
 
 | Platform | Package | Install |
 |----------|---------|---------|
-| macOS | py2app | `pip install py2app` |
+| macOS | PyInstaller | `pip install pyinstaller` |
 | Windows | PyInstaller | `pip install pyinstaller` |
 
 ### Icons
