@@ -29,7 +29,7 @@ platformdirs>=4.0.0
 #   pip install pyinstaller # Windows
 
 # py2app>=0.28.0          # macOS .app bundling
-# pyinstaller>=6.0.0      # Windows .exe bundling
+pyinstaller>=6.0.0      # Windows .exe bundling
 
 # --- Optional Development Dependencies ---
 # Uncomment for development/testing

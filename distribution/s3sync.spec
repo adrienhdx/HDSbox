@@ -12,9 +12,8 @@ import os
 import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-# Project root is the parent directory
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(SPECPATH)))
-os.chdir(PROJECT_ROOT)  # Change to project root for PyInstaller
+# Project root is the parent directory of the spec file
+PROJECT_ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 
 block_cipher = None
 
@@ -26,14 +25,14 @@ APP_NAME = "S3Sync"
 VERSION = "1.0.0"
 
 # Check for icon file
-ICON_FILE = "icon.ico"
+ICON_FILE = os.path.join(PROJECT_ROOT, "icon.ico")
 if not os.path.exists(ICON_FILE):
     ICON_FILE = None
     print("Warning: icon.ico not found. App will use default icon.")
 
 a = Analysis(
-    ["main.py"],
-    pathex=[],
+    [os.path.join(PROJECT_ROOT, "main.py")],  # Absolute path to main.py
+    pathex=[PROJECT_ROOT],                    # Ensure project root is in path
     binaries=[],
     datas=ctk_datas + [
         # Add any additional data files here

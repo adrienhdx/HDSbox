@@ -78,7 +78,7 @@ if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
 
 REM Install build dependencies
 echo [INFO] Installing build dependencies...
-pip install -q pyinstaller>=6.0.0
+py -3.14 -m pip install -q pyinstaller>=6.0.0
 
 REM Change to project root for building
 cd /d "%PROJECT_ROOT%"
