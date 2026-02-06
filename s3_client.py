@@ -182,7 +182,7 @@ class S3ClientWrapper:
         local_path: Path,
         s3_key: str,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, Optional[str]]:
         """
         Upload a file to S3.
         
@@ -192,14 +192,14 @@ class S3ClientWrapper:
             progress_callback: Optional callback(filename, bytes_sent, total_bytes)
         
         Returns:
-            Tuple of (success, message)
+            Tuple of (success, message, etag)
         """
         bucket = self.config.sync.bucket_name
         logger.debug(f"upload_file called: {local_path} -> s3://{bucket}/{s3_key}")
         
         if not local_path.exists():
             logger.warning(f"Upload aborted - file not found: {local_path}")
-            return False, f"File not found: {local_path}"
+            return False, f"File not found: {local_path}", None
         
         try:
             file_size = local_path.stat().st_size
@@ -228,16 +228,24 @@ class S3ClientWrapper:
                 Callback=callback,
             )
             
+            # Get ETag from uploaded object
+            etag = None
+            try:
+                response = self.client.head_object(Bucket=bucket, Key=s3_key)
+                etag = response.get('ETag', '').strip('"')
+            except Exception as e:
+                logger.warning(f"Could not retrieve ETag after upload: {e}")
+            
             logger.info(f"Successfully uploaded {local_path.name} ({file_size} bytes)")
-            return True, f"Uploaded to s3://{bucket}/{s3_key}"
+            return True, f"Uploaded to s3://{bucket}/{s3_key}", etag
             
         except ClientError as e:
             error_msg = e.response['Error'].get('Message', str(e))
             logger.error(f"Upload failed for {local_path}: {error_msg}")
-            return False, f"Upload failed: {error_msg}"
+            return False, f"Upload failed: {error_msg}", None
         except Exception as e:
             logger.error(f"Upload failed for {local_path}: {e}")
-            return False, f"Upload failed: {str(e)}"
+            return False, f"Upload failed: {str(e)}", None
     
     def rename_object(self, old_key: str, new_key: str) -> tuple[bool, str]:
         """

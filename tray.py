@@ -219,7 +219,7 @@ class TrayManager:
         logger.info("Quit requested from system tray menu")
         if self.on_quit:
             self.on_quit()
-        self.stop()
+        # Don't call self.stop() here - the quit callback handles tray cleanup
     
     def _handle_empty_trash(self, icon, item):
         """Handle empty trash menu click."""

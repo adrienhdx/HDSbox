@@ -45,12 +45,16 @@ class SyncEngine:
         state: AppState,
         status_callback: Optional[Callable[[AppState], None]] = None,
         on_file_deleted: Optional[Callable[[str], None]] = None,
+        on_file_uploaded: Optional[Callable[[str, Path, Optional[str]], None]] = None,
+        on_file_downloaded: Optional[Callable[[str, Path, str, int], None]] = None,
     ):
         self.config = config
         self.event_queue = event_queue
         self.state = state
         self.status_callback = status_callback
         self.on_file_deleted = on_file_deleted
+        self.on_file_uploaded = on_file_uploaded
+        self.on_file_downloaded = on_file_downloaded
         
         self._s3_client: Optional[S3ClientWrapper] = None
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -237,6 +241,14 @@ class SyncEngine:
             
             if success:
                 upload_time = time.time() - start_time
+                
+                # Update sync state after successful rename
+                if self.on_file_uploaded:
+                    try:
+                        self.on_file_uploaded(new_s3_key, local_path, None)
+                    except Exception as e:
+                        logger.warning(f"Failed to update sync state after rename: {e}")
+                
                 logger.info(f"Renamed: {old_s3_key} -> {new_s3_key} in {upload_time:.2f}s")
                 return SyncResult(
                     event=event,
@@ -285,14 +297,21 @@ class SyncEngine:
         # Retry loop with exponential backoff
         while event.can_retry():
             try:
-                success, message = s3_client.upload_file(
+                success, message, etag = s3_client.upload_file(
                     local_path=local_path,
                     s3_key=s3_key,
                     progress_callback=self._on_upload_progress,
                 )
                 
                 if success:
-                    upload_time = time.time() - start_time
+                    upload_time = time.time() - start_time                    
+                    # Update sync state after successful upload
+                    if self.on_file_uploaded:
+                        try:
+                            self.on_file_uploaded(s3_key, local_path, etag)
+                        except Exception as e:
+                            logger.warning(f"Failed to update sync state after upload: {e}")
+                    
                     return SyncResult(
                         event=event,
                         status=SyncStatus.COMPLETED,
@@ -368,6 +387,13 @@ class SyncEngine:
                     # Get actual file size after download
                     if local_path.exists():
                         file_size = local_path.stat().st_size
+                    
+                    # Update sync state after successful download
+                    if self.on_file_downloaded:
+                        try:
+                            self.on_file_downloaded(s3_key, local_path, event.s3_etag or "", event.s3_size or 0)
+                        except Exception as e:
+                            logger.warning(f"Failed to update sync state after download: {e}")
                     
                     return SyncResult(
                         event=event,

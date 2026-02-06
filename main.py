@@ -356,6 +356,8 @@ class S3SyncApp:
             state=self.state,
             status_callback=self._on_status_update,
             on_file_deleted=self._s3_scanner.remove_sync_state,
+            on_file_uploaded=self._s3_scanner.update_sync_state_after_upload,
+            on_file_downloaded=self._s3_scanner.update_sync_state_after_download,
         )
         self._sync_engine.start()
         self.logger.debug("SyncEngine started")
@@ -531,6 +533,10 @@ class S3SyncApp:
             self.logger.debug("Showing settings window")
             self._settings_window.deiconify()
             self._settings_window.lift()
+            # On Windows, ensure window gets focus and appears on top
+            self._settings_window.focus_force()
+            self._settings_window.attributes('-topmost', True)
+            self._settings_window.after(100, lambda: self._settings_window.attributes('-topmost', False))
         else:
             self.logger.debug("Starting minimized to tray")
             self._settings_window.withdraw()
