@@ -1,4 +1,4 @@
-# S3-Drive Sync Application
+# HDSbox Sync Application
 
 A cross-platform desktop application that syncs a local folder to S3-compatible storage, similar to Google Drive or OneDrive.
 
