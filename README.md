@@ -2,9 +2,6 @@
 
 A cross-platform desktop application that syncs a local folder to S3-compatible storage, similar to Google Drive or OneDrive.
 
-![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
-![License MIT](https://img.shields.io/badge/license-MIT-green)
-
 ## Features
 
 - **Real-time Sync**: Monitors a local folder and automatically uploads changes to S3
@@ -271,26 +268,3 @@ The resulting executable will be in `dist\S3Sync\S3Sync.exe`.
 
 - **macOS**: Place `icon.icns` in the project root, or use `distribution/create_icns.sh` to convert from PNG
 - **Windows**: Place `icon.ico` in the project root (use online converters for PNG→ICO)
-
-## Future Enhancements
-
-The architecture supports future bidirectional sync:
-- `s3_client.py` includes `list_objects()` and `delete_object()` methods
-- `models.py` includes `DELETED` event type
-- Config is designed for extensibility
-
-Potential additions:
-- [ ] Bidirectional sync with conflict resolution
-- [ ] Full sync on startup (scan and upload all existing files)
-- [ ] Bandwidth throttling
-- [ ] Sync history/log viewer in UI
-- [ ] Multiple folder support
-- [ ] File versioning awareness
-
-## License
-
-MIT License - See [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions welcome! Please open an issue to discuss changes before submitting a PR.
